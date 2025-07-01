@@ -8,6 +8,7 @@
     "pdf-agent-mcp": "server/index.js"
   },
   "scripts": {
+    "deploy": "wrangler deploy",
     "build": "tsc && mkdir -p server && cp build/index.js server/",
     "build:dxt": "npm run build && npm run bundle",
     "bundle": "npm pack --pack-destination=dist/",
