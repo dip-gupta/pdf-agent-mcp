@@ -24,6 +24,31 @@ interface DurableObjectStub {
   fetch(request: Request): Promise<Response>;
 }
 
+// MCP Message types
+interface MCPRequest {
+  jsonrpc: "2.0";
+  id?: string | number;
+  method: string;
+  params?: any;
+}
+
+interface MCPResponse {
+  jsonrpc: "2.0";
+  id?: string | number;
+  result?: any;
+  error?: {
+    code: number;
+    message: string;
+    data?: any;
+  };
+}
+
+interface MCPNotification {
+  jsonrpc: "2.0";
+  method: string;
+  params?: any;
+}
+
 // Tool schemas using Zod for validation
 const GetPdfMetadataSchema = z.object({
   pdfData: z.string().describe("Base64 encoded PDF file data"),
@@ -207,58 +232,91 @@ class PDFProcessor {
     }
 
     const pages: number[] = [];
+    const parts = range.split(',');
 
-    range.split(',').forEach(part => {
-      part = part.trim();
-
+    for (const part of parts) {
       if (part.includes(':')) {
         const [start, end] = part.split(':').map(s => s.trim());
-        const startPage = start ? parseInt(start, 10) : 1;
-        const endPage = end ? parseInt(end, 10) : totalPages;
-
-        for (let i = Math.max(1, startPage); i <= Math.min(totalPages, endPage); i++) {
-          if (!pages.includes(i)) pages.push(i);
+        const startPage = start ? parseInt(start) : 1;
+        const endPage = end ? parseInt(end) : totalPages;
+        
+        for (let i = startPage; i <= Math.min(endPage, totalPages); i++) {
+          if (i > 0) pages.push(i);
         }
       } else {
-        const pageNum = parseInt(part, 10);
-        if (pageNum >= 1 && pageNum <= totalPages && !pages.includes(pageNum)) {
-          pages.push(pageNum);
+        const page = parseInt(part.trim());
+        if (page > 0 && page <= totalPages) {
+          pages.push(page);
         }
       }
-    });
+    }
 
-    return pages.sort((a, b) => a - b);
+    return [...new Set(pages)].sort((a, b) => a - b);
   }
 }
 
-// MCP Server Implementation
 class PDFAgentMCPServer {
   private tools = [
     {
       name: "get_pdf_metadata",
-      description: "Extract metadata from a PDF file",
-      inputSchema: GetPdfMetadataSchema.shape,
+      description: "Extract metadata from a PDF file including title, author, page count, etc.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pdfData: { type: "string", description: "Base64 encoded PDF file data" }
+        },
+        required: ["pdfData"]
+      }
     },
     {
-      name: "get_pdf_text", 
-      description: "Extract text content from a PDF file with optional page range",
-      inputSchema: GetPdfTextSchema.shape,
+      name: "get_pdf_text",
+      description: "Extract text content from a PDF file with optional page range specification",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pdfData: { type: "string", description: "Base64 encoded PDF file data" },
+          pageRange: { type: "string", description: "Page range (e.g., '1:5', '2,4,6', '3:' for page 3 to end)" }
+        },
+        required: ["pdfData"]
+      }
     },
     {
       name: "search_pdf",
-      description: "Search for text within a PDF file with optional regex and context",
-      inputSchema: SearchPdfSchema.shape,
+      description: "Search for text within a PDF file with various options",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pdfData: { type: "string", description: "Base64 encoded PDF file data" },
+          searchText: { type: "string", description: "Text to search for" },
+          regex: { type: "boolean", description: "Whether to treat searchText as a regular expression" },
+          caseSensitive: { type: "boolean", description: "Whether the search should be case sensitive" },
+          contextLines: { type: "number", description: "Number of lines of context around matches" }
+        },
+        required: ["pdfData", "searchText"]
+      }
     },
     {
       name: "get_pdf_outline",
-      description: "Extract the outline/table of contents from a PDF file",
-      inputSchema: GetPdfOutlineSchema.shape,
+      description: "Extract the outline/bookmarks from a PDF file",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pdfData: { type: "string", description: "Base64 encoded PDF file data" }
+        },
+        required: ["pdfData"]
+      }
     },
     {
       name: "download_pdf",
-      description: "Download a PDF from a URL and return its base64 data",
-      inputSchema: DownloadPdfSchema.shape,
-    },
+      description: "Download a PDF from a URL and return its base64 encoded data",
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL of the PDF to download" }
+        },
+        required: ["url"]
+      }
+    }
   ];
 
   async handleToolCall(toolName: string, args: any) {
@@ -293,14 +351,14 @@ class PDFAgentMCPServer {
     }
   }
 
-  async handleMCPRequest(request: any) {
-    const { method, params } = request;
+  async handleMCPRequest(request: MCPRequest): Promise<MCPResponse | null> {
+    const { method, params, id } = request;
 
     switch (method) {
       case "initialize":
         return {
           jsonrpc: "2.0",
-          id: request.id,
+          id: id,
           result: {
             protocolVersion: "2024-11-05",
             capabilities: {
@@ -316,7 +374,7 @@ class PDFAgentMCPServer {
       case "tools/list":
         return {
           jsonrpc: "2.0",
-          id: request.id,
+          id: id,
           result: {
             tools: this.tools
           }
@@ -329,7 +387,7 @@ class PDFAgentMCPServer {
           
           return {
             jsonrpc: "2.0",
-            id: request.id,
+            id: id,
             result: {
               content: [
                 {
@@ -342,7 +400,7 @@ class PDFAgentMCPServer {
         } catch (error) {
           return {
             jsonrpc: "2.0",
-            id: request.id,
+            id: id,
             error: {
               code: -1,
               message: error instanceof Error ? error.message : "Unknown error"
@@ -357,7 +415,7 @@ class PDFAgentMCPServer {
       default:
         return {
           jsonrpc: "2.0",
-          id: request.id,
+          id: id,
           error: {
             code: -32601,
             message: "Method not found"
@@ -381,55 +439,106 @@ export class MyMCP {
     try {
       const url = new URL(request.url);
       
-      // Handle both root (/) and /sse paths for MCP connections
-      if (request.method === "POST" && (url.pathname === "/" || url.pathname === "/sse")) {
-        const body = await request.text();
-        const jsonRpcRequest = JSON.parse(body);
-        
-        const response = await this.server.handleMCPRequest(jsonRpcRequest);
-        
-        // Don't send response for notifications
-        if (response === null) {
-          return new Response("", {
-            status: 204,
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Allow-Methods": "POST, OPTIONS",
-              "Access-Control-Allow-Headers": "Content-Type",
-            },
-          });
-        }
-        
-        return new Response(JSON.stringify(response), {
+      // Handle CORS preflight
+      if (request.method === "OPTIONS") {
+        return new Response(null, {
+          status: 200,
           headers: {
-            "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Max-Age": "86400",
           },
         });
       }
       
+      // Handle SSE endpoint for MCP clients
       if (request.method === "GET" && url.pathname === "/sse") {
-        // Handle SSE connection for MCP
-        return new Response("data: {\"type\":\"connection\",\"status\":\"connected\"}\n\n", {
+        // SSE connection handling
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        
+        // Send initial connection event
+        await writer.write(new TextEncoder().encode("event: init\ndata: {\"type\":\"connection\",\"status\":\"ready\"}\n\n"));
+        
+        // Keep connection alive
+        const keepAlive = setInterval(async () => {
+          try {
+            await writer.write(new TextEncoder().encode("event: ping\ndata: {\"type\":\"ping\"}\n\n"));
+          } catch (e) {
+            clearInterval(keepAlive);
+          }
+        }, 30000);
+        
+        return new Response(readable, {
           headers: {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
           },
         });
       }
       
+      // Handle HTTP POST for MCP JSON-RPC
+      if (request.method === "POST" && url.pathname === "/sse") {
+        const body = await request.text();
+        
+        try {
+          const jsonRpcRequest: MCPRequest = JSON.parse(body);
+          const response = await this.server.handleMCPRequest(jsonRpcRequest);
+          
+          // Don't send response for notifications
+          if (response === null) {
+            return new Response("", {
+              status: 204,
+              headers: {
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+              },
+            });
+          }
+          
+          return new Response(JSON.stringify(response), {
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+              "Access-Control-Allow-Methods": "POST, OPTIONS",
+              "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+          });
+        } catch (error) {
+          console.error("Error parsing MCP request:", error);
+          return new Response(JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: {
+              code: -32700,
+              message: "Parse error"
+            }
+          }), {
+            status: 400,
+            headers: {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            },
+          });
+        }
+      }
+      
+      // Handle GET requests for server info
       if (request.method === "GET") {
         return new Response(JSON.stringify({
           name: "pdf-agent-mcp",
           version: "1.0.0",
           description: "PDF Agent MCP Server - provides tools for PDF analysis and processing",
+          protocol: "mcp",
           endpoints: {
-            sse: "/sse",
+            mcp: "/sse"
+          },
+          capabilities: {
             tools: ["get_pdf_metadata", "get_pdf_text", "search_pdf", "get_pdf_outline", "download_pdf"]
           }
         }), {
@@ -440,21 +549,24 @@ export class MyMCP {
         });
       }
 
-      if (request.method === "OPTIONS") {
-        return new Response(null, {
-          status: 200,
-          headers: {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-          },
-        });
-      }
-
-      return new Response("Method not allowed", { status: 405 });
+      return new Response("Method not allowed", { 
+        status: 405,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+        }
+      });
     } catch (error) {
       console.error("Error in Durable Object fetch:", error);
-      return new Response("Internal Server Error", { status: 500 });
+      return new Response(JSON.stringify({
+        error: "Internal Server Error",
+        message: error instanceof Error ? error.message : "Unknown error"
+      }), { 
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        }
+      });
     }
   }
 }
@@ -462,11 +574,25 @@ export class MyMCP {
 // Export for Cloudflare Workers
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
-    // Get or create the durable object instance
-    const id = env.MCP_OBJECT.idFromName("pdf-agent-mcp");
-    const durableObject = env.MCP_OBJECT.get(id);
-    
-    // Forward the request to the durable object
-    return durableObject.fetch(request);
+    try {
+      // Get or create the durable object instance
+      const id = env.MCP_OBJECT.idFromName("pdf-agent-mcp");
+      const durableObject = env.MCP_OBJECT.get(id);
+      
+      // Forward the request to the durable object
+      return durableObject.fetch(request);
+    } catch (error) {
+      console.error("Error in main fetch handler:", error);
+      return new Response(JSON.stringify({
+        error: "Internal Server Error",
+        message: error instanceof Error ? error.message : "Unknown error"
+      }), { 
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        }
+      });
+    }
   },
 };
