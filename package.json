@@ -54,7 +54,8 @@
   "devDependencies": {
     "@types/node": "^24.0.7",
     "@types/pdfjs-dist": "^2.10.377",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "wrangler": "^4.22.0"
   },
   "files": [
     "server/",
