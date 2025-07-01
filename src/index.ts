@@ -683,6 +683,8 @@ export class MyMCP {
     this.env = env;
   }
   
+
+  
   async fetch(request: Request): Promise<Response> {
     try {
       if (request.method === "POST") {
@@ -928,17 +930,11 @@ export class MyMCP {
 // Export for Cloudflare Workers
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
-    // For non-durable object requests, return basic info
-    return new Response(JSON.stringify({
-      name: "pdf-agent-mcp",
-      version: "1.0.0",
-      description: "PDF Agent MCP Server for Cloudflare Workers",
-      note: "Use the durable object endpoint for MCP functionality"
-    }), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
+    // Get or create the durable object instance
+    const id = env.MCP_OBJECT.idFromName("pdf-agent-mcp");
+    const durableObject = env.MCP_OBJECT.get(id);
+    
+    // Forward the request to the durable object
+    return durableObject.fetch(request);
   },
 };
