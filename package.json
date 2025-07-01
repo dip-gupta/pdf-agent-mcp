@@ -43,6 +43,7 @@
     "node": ">=16.0.0"
   },
   "dependencies": {
+    "@cloudflare/workers-types": "^4.20240925.0",
     "@modelcontextprotocol/sdk": "^1.13.2",
     "@types/sharp": "^0.31.1",
     "pdf-lib": "^1.17.1",
