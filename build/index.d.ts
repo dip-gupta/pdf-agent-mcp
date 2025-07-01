@@ -1,7 +1,7 @@
 /**
  * PDF Agent MCP Server for Cloudflare Workers
  * A Model Context Protocol server for dynamic PDF content extraction and analysis.
- * Built following Cloudflare's recommended patterns for MCP servers.
+ * Implements the Streamable HTTP transport protocol.
  */
 interface Env {
     MCP_OBJECT: DurableObjectNamespace;

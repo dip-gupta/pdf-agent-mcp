@@ -1,7 +1,7 @@
 /**
  * PDF Agent MCP Server for Cloudflare Workers
  * A Model Context Protocol server for dynamic PDF content extraction and analysis.
- * Built following Cloudflare's recommended patterns for MCP servers.
+ * Implements the Streamable HTTP transport protocol.
  */
 import { z } from "zod";
 import { PDFDocument } from "pdf-lib";
@@ -366,42 +366,50 @@ export class MyMCP {
                     headers: {
                         "Access-Control-Allow-Origin": "*",
                         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
                         "Access-Control-Max-Age": "86400",
                     },
                 });
             }
-            // Handle SSE endpoint for MCP clients
-            if (request.method === "GET" && url.pathname === "/sse") {
-                // SSE connection handling
-                const { readable, writable } = new TransformStream();
-                const writer = writable.getWriter();
-                // Send initial connection event
-                await writer.write(new TextEncoder().encode("event: init\ndata: {\"type\":\"connection\",\"status\":\"ready\"}\n\n"));
-                // Keep connection alive
-                const keepAlive = setInterval(async () => {
-                    try {
-                        await writer.write(new TextEncoder().encode("event: ping\ndata: {\"type\":\"ping\"}\n\n"));
-                    }
-                    catch (e) {
-                        clearInterval(keepAlive);
-                    }
-                }, 30000);
-                return new Response(readable, {
-                    headers: {
-                        "Content-Type": "text/event-stream",
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                    },
-                });
-            }
-            // Handle HTTP POST for MCP JSON-RPC
+            // Handle POST requests for Streamable HTTP (MCP endpoint)
             if (request.method === "POST" && url.pathname === "/sse") {
+                const contentType = request.headers.get("content-type");
+                if (!contentType || !contentType.includes("application/json")) {
+                    return new Response(JSON.stringify({
+                        jsonrpc: "2.0",
+                        id: null,
+                        error: {
+                            code: -32700,
+                            message: "Parse error: Expected application/json content type"
+                        }
+                    }), {
+                        status: 400,
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    });
+                }
                 const body = await request.text();
                 try {
                     const jsonRpcRequest = JSON.parse(body);
+                    // Validate JSON-RPC format
+                    if (jsonRpcRequest.jsonrpc !== "2.0" || !jsonRpcRequest.method) {
+                        return new Response(JSON.stringify({
+                            jsonrpc: "2.0",
+                            id: jsonRpcRequest.id || null,
+                            error: {
+                                code: -32600,
+                                message: "Invalid Request: Missing or invalid jsonrpc/method"
+                            }
+                        }), {
+                            status: 400,
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                            },
+                        });
+                    }
                     const response = await this.server.handleMCPRequest(jsonRpcRequest);
                     // Don't send response for notifications
                     if (response === null) {
@@ -410,18 +418,37 @@ export class MyMCP {
                             headers: {
                                 "Access-Control-Allow-Origin": "*",
                                 "Access-Control-Allow-Methods": "POST, OPTIONS",
-                                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
                             },
                         });
                     }
-                    return new Response(JSON.stringify(response), {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Access-Control-Allow-Origin": "*",
-                            "Access-Control-Allow-Methods": "POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                        },
-                    });
+                    // For Streamable HTTP, we always return JSON unless specifically requesting SSE
+                    const acceptHeader = request.headers.get("accept") || "";
+                    const wantsSSE = acceptHeader.includes("text/event-stream");
+                    if (!wantsSSE) {
+                        // Return standard HTTP JSON response
+                        return new Response(JSON.stringify(response), {
+                            headers: {
+                                "Content-Type": "application/json",
+                                "Access-Control-Allow-Origin": "*",
+                                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+                            },
+                        });
+                    }
+                    else {
+                        // Return SSE response for streaming clients
+                        const sseData = `data: ${JSON.stringify(response)}\n\n`;
+                        return new Response(sseData, {
+                            headers: {
+                                "Content-Type": "text/event-stream",
+                                "Cache-Control": "no-cache",
+                                "Connection": "keep-alive",
+                                "Access-Control-Allow-Origin": "*",
+                                "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+                            },
+                        });
+                    }
                 }
                 catch (error) {
                     console.error("Error parsing MCP request:", error);
@@ -430,7 +457,7 @@ export class MyMCP {
                         id: null,
                         error: {
                             code: -32700,
-                            message: "Parse error"
+                            message: "Parse error: Invalid JSON"
                         }
                     }), {
                         status: 400,
@@ -441,25 +468,41 @@ export class MyMCP {
                     });
                 }
             }
-            // Handle GET requests for server info
+            // Handle GET requests for server info and SSE endpoint discovery
             if (request.method === "GET") {
-                return new Response(JSON.stringify({
-                    name: "pdf-agent-mcp",
-                    version: "1.0.0",
-                    description: "PDF Agent MCP Server - provides tools for PDF analysis and processing",
-                    protocol: "mcp",
-                    endpoints: {
-                        mcp: "/sse"
-                    },
-                    capabilities: {
-                        tools: ["get_pdf_metadata", "get_pdf_text", "search_pdf", "get_pdf_outline", "download_pdf"]
-                    }
-                }), {
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                    },
-                });
+                if (url.pathname === "/sse") {
+                    // Return SSE endpoint for clients that need it
+                    return new Response("data: {\"type\":\"connection\",\"status\":\"ready\"}\n\n", {
+                        headers: {
+                            "Content-Type": "text/event-stream",
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                            "Access-Control-Allow-Origin": "*",
+                            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+                        },
+                    });
+                }
+                else {
+                    // Return server info for root requests
+                    return new Response(JSON.stringify({
+                        name: "pdf-agent-mcp",
+                        version: "1.0.0",
+                        description: "PDF Agent MCP Server - provides tools for PDF analysis and processing",
+                        protocol: "mcp",
+                        transport: "streamable-http",
+                        endpoints: {
+                            mcp: "/sse"
+                        },
+                        capabilities: {
+                            tools: ["get_pdf_metadata", "get_pdf_text", "search_pdf", "get_pdf_outline", "download_pdf"]
+                        }
+                    }), {
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Access-Control-Allow-Origin": "*",
+                        },
+                    });
+                }
             }
             return new Response("Method not allowed", {
                 status: 405,
