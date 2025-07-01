@@ -687,14 +687,41 @@ export class MyMCP {
   
   async fetch(request: Request): Promise<Response> {
     try {
-      if (request.method === "POST") {
+      const url = new URL(request.url);
+      
+      // Handle both root (/) and /sse paths for MCP connections
+      if (request.method === "POST" && (url.pathname === "/" || url.pathname === "/sse")) {
         const body = await request.text();
         
         try {
           // Handle MCP JSON-RPC requests
           const jsonRpcRequest = JSON.parse(body);
           
-          if (jsonRpcRequest.method === "tools/list") {
+          if (jsonRpcRequest.method === "initialize") {
+            const response = JSON.stringify({
+              jsonrpc: "2.0",
+              id: jsonRpcRequest.id,
+              result: {
+                protocolVersion: "2024-11-05",
+                capabilities: {
+                  tools: {}
+                },
+                serverInfo: {
+                  name: "pdf-agent-mcp",
+                  version: "1.0.0"
+                }
+              }
+            });
+            
+            return new Response(response, {
+              headers: {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+              },
+            });
+          } else if (jsonRpcRequest.method === "tools/list") {
             const tools = {
               tools: [
                 {
@@ -845,7 +872,17 @@ export class MyMCP {
                 "Access-Control-Allow-Headers": "Content-Type",
               },
             });
-          } else if (jsonRpcRequest.method === "tools/call") {
+                     } else if (jsonRpcRequest.method === "notifications/initialized") {
+             // Acknowledgment for initialized notification - no response needed for notifications
+             return new Response("", {
+               status: 204,
+               headers: {
+                 "Access-Control-Allow-Origin": "*",
+                 "Access-Control-Allow-Methods": "POST, OPTIONS",
+                 "Access-Control-Allow-Headers": "Content-Type",
+               },
+             });
+           } else if (jsonRpcRequest.method === "tools/call") {
             const { name, arguments: args } = jsonRpcRequest.params;
             const result = await handleToolCall(name, args);
             
@@ -889,6 +926,19 @@ export class MyMCP {
             headers: { "Content-Type": "application/json" },
           });
         }
+      }
+      
+      if (request.method === "GET" && url.pathname === "/sse") {
+        // Handle SSE connection for MCP
+        return new Response("data: {\"type\":\"connection\",\"status\":\"connected\"}\n\n", {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type",
+          },
+        });
       }
       
       if (request.method === "GET") {
